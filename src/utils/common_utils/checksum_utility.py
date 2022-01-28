@@ -48,12 +48,12 @@ def get_md5_checksum(string_value=None, file_name=None, is_file=False
         if read_file_in_chunks:  # if file is too big to fit in memory
             
             hash_md5 = hashlib.md5()
-            with open(file_name, "rb", encoding="utf-8") as f:
+            with open(file_name, "rb") as f:
                 for chunk in iter(lambda: f.read(chunk_size), b""):
                     hash_md5.update(chunk)
         
         else: # read the file as whole
-            with open(file_name, 'rb', encoding="utf-8") as f:
+            with open(file_name, 'rb') as f:
                 hash_md5 = hashlib.md5(f.read())
 
     else:   # create hash for String value provided
@@ -61,8 +61,13 @@ def get_md5_checksum(string_value=None, file_name=None, is_file=False
     
 
     # ########## return the MD5 hash ######################### #
-    if base64_encode: # if base64 encoding is needed
+    if base64_encode and hash_format_byte: # if base64 encoding is needed along with byte type
         return base64.b64encode(hash_md5.digest()) # base64 encoding works only with byte type
+
+    elif base64_encode: # if base64 encoding is needed, but string type
+        # base64 encoding works only with byte type, thus to convert to
+        # string decode() is needed
+        return base64.b64encode(hash_md5.digest()).decode("utf-8")
 
     elif hash_format_byte: # create hash in byte format
         return hash_md5.digest()

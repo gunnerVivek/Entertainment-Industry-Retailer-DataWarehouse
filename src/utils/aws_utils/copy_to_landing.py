@@ -1,26 +1,16 @@
-import os
-# from typing import Any
+
 import boto3
 from botocore.config import Config
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 from botocore.exceptions import BotoCoreError # base exception class for all Boto3 error types
+from pathlib import Path
 from dataclasses import dataclass
 
-from src.utils import date_utility
 from src.utils.common_utils import checksum_utility
-
-# TODO: Create 
-# TODO: There is no BoTo3 copy directory to s3 because there is no directory concept in object storage. 
-#       Thus copy all files one by one implement using Multithreading
-# https://stackoverflow.com/questions/37178584/recursively-copying-content-from-one-path-to-another-of-s3-buckets-using-boto-in
-# https://medium.com/analytics-vidhya/aws-s3-multipart-upload-download-using-boto3-python-sdk-2dedb0945f11
-# 
-# TODO: look at how to make sure if file succesfully uploaded
-    #   https://stackoverflow.com/questions/44002090/how-to-check-if-boto3-s3-client-upload-fileobj-succeeded
-    #   https://stackoverflow.com/questions/52880311/howto-put-object-to-s3-with-content-md5
-    #   https://stackoverflow.com/questions/36179310/an-exception-the-content-md5-you-specified-did-not-match-what-we-received
-# PREFIX = os.getenv("PREFIX")
+from src.utils.file_utility import get_file_size
+from src.utils.aws_utils.aws_utility import verify_multipart_uploaded_fl, calculate_s3_etag
+from config.definitions import MB
 
 
 @dataclass
@@ -47,7 +37,7 @@ class ErrorTypeClass:
     error_type_name: str
     error_msg: str
 
-    # will be returned when class object is initialized
+    # will be returned when class object is instantiated
     def __new__(cls, name, msg):
         return {'error': name, 'error_msg': msg}
 
@@ -58,7 +48,7 @@ class S3_landing:
     '''
 
 
-    def __init__(self, region_name='us-east-1', max_attempts=2, mode='standard'):
+    def __init__(self, region_name='us-east-1', max_attempts=3, mode='standard', profile='default'):
         self.S3_config = Config(
             retries= {
                 'max_attempts': max_attempts
@@ -66,35 +56,15 @@ class S3_landing:
             }
         )
 
-        self.session = boto3.Session(profile_name='prfl-entertainment-retailer'
-                            , region_name=self.region_name)
+        # self.session = boto3.Session(profile_name='prfl-entertainment-retailer'
+        #                     , region_name=region_name)
+        self.session = boto3.Session(region_name=region_name, profile_name=profile)
         self.s3_client = self.session.client('s3', config=self.S3_config)
         self.s3_resource = self.session.resource('s3')
 
 
-    @staticmethod
-    def _produce_key(full_file_name, prefix=None):
-        '''
-            This method produces the key for the object to be uploaded.
-            It combines the date and the file name (last part of the full file name).
-
-            Parameters:
-            ----------------
-            full_file_name: Fully qualified name of the file that will be uploaded.
-        '''
-        return date_utility.get_current_date() + (full_file_name.split('/')[-1] or full_file_name)
-
-
-    def _check_upload_ok(check_key):
-        '''
-            This functions checks if the file was uploaded un-corrupted.
-
-        '''
-
-
     def upload_file_to_bucket(self, file_name=None, bucket_name=None, key=None
             , check_transfered_data=False):#, is_object=False):
-        # 14.
         '''
         Uploads a Single file to the specifed S3 location. Multipart upload is
         not supported. Max file size cannot be greater than 5 GB.
@@ -107,41 +77,34 @@ class S3_landing:
         Parameter:
         --------------
         bucket_name: Name of the bucket S3 
-        file_name  : Name of the file to be uploaded. 
+        file_name  : Fully Qualified Name of the file to be uploaded. 
         key        : Name of the oject in S3, ie. what will the name with which
                      the file will be stored in S3.
 
         Returns:
         ----------------
-        Tuple(True|False, Dict type Response from S3)
+        In case verification is not required or verification fails (but object upload successful)
+        will still return SUCCESS_CODE = 1. This is to allow for flexibility to acomodate any
+        future change in ETag algorithm calculation for AWS.
+        
         Format:
         ( success[= 0 | 1 | -1 ]
-          , {
-                'ResponseMetadata': 
-                    {
-                        'RequestId': 'VLxxxxxxxxxxxxxxxx6'
-                        , 'HostId': 'JpKxxxxxxxxxxxx51s='
-                        , 'HTTPStatusCode': 200
-                        , 'HTTPHeaders': 
-                            {   'x-amz-id-2': 'Jpxxxxxxxxxxxxxxxxxxxxxxxxxxx51s='
-                                , 'x-amz-request-id': 'VLxxxxxxxxxxxxxxxx6', 'date': 'Wed, 26 Jan 2022 11:46:21 GMT'
-                                , 'etag': '"5460b52943a915d16f119f3589aea281"', 'server': 'AmazonS3', 'content-length': '0'
-                            }
-                        , 'RetryAttempts': 0
-                    }
-                    , 'ETag': '"5460b52943a915d16f119f3589aea281"'
-            }
+          , ErrorTypeClass(type(e).__name__, e)  
         )
         '''
         
         if not key:
-            key = file_name
+            key = Path(file_name).name
+
         
         # this will be set to 
         #   : 0 on successful upload and file verifed
         #   : 1 on successfull upload operation completion
         #   : -1 (default); unsuccessful
         SUCCESS_CODE = -1 
+
+        # will hold error type if Error, empty Otherwise
+        res = {}
 
         # calulate MD5 Hash only if data is to be checked for corruption during Network traversal
         if check_transfered_data:
@@ -193,13 +156,16 @@ class S3_landing:
 
             except OSError as e:
                 res = ErrorTypeClass(type(e).__name__, e)
-        
+
+            except Exception as e:
+                res = ErrorTypeClass(type(e).__name__, e)
+
         return (SUCCESS_CODE, res)
 
 
     def upload_file_to_bucket_multipart(self, bucket_name=None, file_name=None
             , key = None, binary_object=False, multipart_threshold=25, max_concurrency=10
-            , multipart_chunksize=25):
+            , threshold_unit=MB, multipart_chunksize=25, chunk_size_unit=MB):
         '''
         uploads a file or binary in multiple parts. The destination file name will be same as
         The expected file name 
@@ -209,13 +175,36 @@ class S3_landing:
         multipart_threshold: provided in Mb. 
         max_concurrency    :
         file_name          : Fully qualified name of the file to be uploaded.
-        key                : Fully qualified name of the object in S3 
+        key                : Fully qualified name of the object in S3
+
+
+        Returns:
+        ---------------------
+        -1: Upload failed
+        1: Means No Boto3 error ocurred or client Access error occured while uploadig the object.
+           ie. upload operation attempted succesfully without Network or Access error. 
+           Does not gurantee correct file upload
+        0: File upload succesfull and file contents verified.
+        
+        In case verification is not required or verification fails (but object upload successful)
+        will still return SUCCESS_CODE = 1. This is to allow for flexibility to acomodate any
+        future change in ETag algorithm calculation for AWS.
         '''
+        # set name of the file in S3 bucket
+        if not key:
+            key = Path(file_name).name    
 
-        config = TransferConfig(multipart_threshold=multipart_threshold * 1024
+        # this will be set to 
+        #   : 0 on successful upload and file verifed
+        #   : 1 on successfull upload operation completion
+        #   : -1 (default); unsuccessful
+        SUCCESS_CODE = -1 
+
+        config = TransferConfig(multipart_threshold=multipart_threshold * threshold_unit
                     , max_concurrency=max_concurrency
-                    , multipart_chunksize=multipart_chunksize * 1024, use_threads=True)
-
+                    , multipart_chunksize=multipart_chunksize * chunk_size_unit, use_threads=True)
+        
+        # Upload the file 
         try:
             if binary_object: # generally for zipped files
                 with open(file_name, 'rb') as f:
@@ -223,13 +212,41 @@ class S3_landing:
             else:
                 self.s3_client.upload_file(file_name, bucket_name, key, Config=config)
 
+            # upload operation attempted succesfully without Network or Access error
+            SUCCESS_CODE = 1
+
         except ClientError as botoerror:
             #TODO: LOG
-            print("Boto3 error")
+            print(">>Boto3 error", botoerror, sep="\n")
+        #TODO: all other exceptions
+        except Exception as e:
+            #  Handle it here
+            ''
+        else:
+            print("Multipart Upload attempted")
+        ### verify file not corrupted during Network Traversal    #####
         
+        # calculate the ETag
+        try:
+            eTag = calculate_s3_etag(file_name, config.multipart_chunksize)
+        
+        except FileNotFoundError as e:
+            print(f"FileNotFoundError occured while calculating expected ETag, while reading file: {file_name}")
 
-    # No need will be covered as pload_file with compression --> is_object=True
-    # def upload_directory_to_bucket(self, directory_path=None, bucket_name=None):
-    #     pass
+        except OSError as e:
+            print(f"OSError occured while calculating expected ETag, while reading file: {file_name}")
+            
+        # check for non - corrupt upload
+        else:
+            try:
+                if verify_multipart_uploaded_fl(self.s3_client, self.s3_resource, eTag, bucket_name, key):
+                    SUCCESS_CODE = 0
 
+            except BotoCoreError as e:
+                print(f"Produced BotoCoreError while verifying Multipart Upload of: S3://{bucket_name}/{key}")
+                
+            except Exception as e:
+                print(f"Unknown Exception occured while verifying Multipart Upload of: S3://{bucket_name}/{key}")
 
+        # SUCCESS_CODE = -1: Failed upload
+        return SUCCESS_CODE

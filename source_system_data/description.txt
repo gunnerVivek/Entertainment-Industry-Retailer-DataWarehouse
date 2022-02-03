@@ -1,0 +1,2 @@
+This Folder is to hold source system raw data and format files.
+This files will be transferred to AWS landing zone.

@@ -1,0 +1,73 @@
+version: 1
+formatters:
+  SimpleFormatter:
+    # name -> should either be provided at the calling code or default provided at Class def
+    # name -> should be used to provide the calling module.function at calling code
+    format: '	%(asctime)2s- %(levelname)2s- %(name)2s- %(message)'
+    datefmt: '%y-%m-%d-%H:%M:%S'
+  ErrorFormatter:
+     format: '%(asctime)2s- %(levelname)2s- <PID %(process)d:%(processName)2s> %(name)s.%(funcName)s(): %(message)s'
+    datefmt: '%y-%m-%d-%H:%M:%S'
+  DebugFormatter:
+handlers:
+  SourceSystemHandler:
+    class: logging.FileHandler
+    level: DEBUG 
+    formatter: SimpleFormatter
+    filename: src\process_source_system\logs\run_info.log
+  # https://stackoverflow.com/questions/2557168/how-do-i-change-the-default-format-of-log-messages-in-python-app-engine
+  # https://stackoverflow.com/questions/10973362/python-logging-function-name-file-name-line-number-using-a-single-file
+  # https://stackoverflow.com/questions/19074645/need-to-do-a-daily-log-rotation-0utc-using-python
+  # https://stackoverflow.com/questions/17035077/logging-to-multiple-log-files-from-different-classes-in-python/17037016
+  # https://stackoverflow.com/questions/55183394/passing-multiple-handlers-to-a-logger
+
+  ConsoleHandler:
+    class: logging.StreamHandler
+    level: DEBUG 
+    formatter: SimpleFormatter
+    stream: ext://sys.stdout
+
+  ## All the remaining handlers will rollover daily at midnight
+  ErrorHandler:
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter: ErrorFormatter
+    level: ERROR
+    when: 'midnight'
+    utc: True
+    filename: logs/errors.log
+  DebugHandler:
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter: DebugFormatter
+    level: DEBUG
+    when: 'midnight'
+    utc: True
+    filename: logs/debug.log
+  InfoHandler: 
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter:
+    level: INFO
+    when: 'midnight'
+    utc: True
+    filename: logs/general_info.log
+
+loggers:
+  # All the logs from Source Sytems Donot propagate to root
+  SourceSystemLogger:
+    level: INFO
+    handlers: [SourceSystemHandler]
+    propagate: no
+  ErrorLogger:
+    level: ERROR
+    handlers: [ErrorHandler, ConsoleHandler]
+    propagate: yes
+  DebugLogger:
+    level: DEBUG
+    handlers: [DebugHandler]
+    propagate: no 
+  InfoLogger:
+    level: INFO
+    handlers: [InfoHandler]
+    propagate: yes
+root:
+  level: ERROR
+  handlers: [ConsoleHandler]

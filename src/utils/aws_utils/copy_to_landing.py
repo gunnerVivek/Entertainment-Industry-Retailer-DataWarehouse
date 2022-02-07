@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from src.utils.common_utils import checksum_utility
 from src.utils.file_utility import get_file_size
 from src.utils.aws_utils.aws_utility import verify_multipart_uploaded_fl, calculate_s3_etag
-from config.definitions import MB
+from src.config.definitions import MB
 
 
 @dataclass
